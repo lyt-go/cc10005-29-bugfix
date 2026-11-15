@@ -1,4 +1,8 @@
-"""采集快照接口：维护数据快照，覆盖生成快照、确认完成、标记过期等动作。"""
+"""采集快照接口：维护数据快照，覆盖生成快照、确认完成、标记过期等动作。
+
+注意路由声明顺序：`/engines`、`/export` 必须排在 `/{entry_id}` 之前，
+否则会被路径参数吞掉，导出和批次选择会表现为“点了没反应”。
+"""
 from __future__ import annotations
 
 from typing import Any
@@ -30,6 +34,33 @@ def list_entries(
     return PageResult(items=items, total=total, page=page, size=size)
 
 
+@router.get("/engines")
+def list_engines() -> dict[str, Any]:
+    """生成快照前可选的当前去重批次：只返回已启用的引擎版本。"""
+    engines = service.engines.list_active()
+    return {
+        "module": "snapshot",
+        "items": [
+            {
+                "引擎编号": row.get("引擎编号"),
+                "去重字段组": row.get("去重字段组"),
+                "哈希算法": row.get("哈希算法"),
+                "版本": row.get("版本") or row.get("引擎编号"),
+                "批次统计": row.get("批次统计"),
+            }
+            for row in engines
+        ],
+        "total": len(engines),
+    }
+
+
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出采集快照清单：返回当前过滤条件下的全量数据。"""
+    items, total = service.list_entries(page=1, size=10000)
+    return {"module": "snapshot", "total": total, "items": items}
+
+
 @router.get("/{entry_id}", response_model=dict)
 def get_entry(entry_id: int) -> dict:
     """读取单条数据快照明细；不存在时给出可读的错误说明。"""
@@ -50,16 +81,9 @@ def create_entry(payload: EntryPayload) -> ActionResult:
 
 @router.post("/{entry_id}/actions", response_model=ActionResult)
 def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
-    """对单条数据快照执行生成快照、确认完成、标记过期；不允许的动作会被拦下并说明原因。"""
+    """对单条数据快照执行生成快照、确认完成、标记过期；状态准入失败会说明原因，统计不变。"""
     action = str(payload.values.get("action") or "").strip()
-    entry, message = service.run_action(entry_id, action)
+    entry, message = service.run_action(entry_id, action, payload.values)
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出采集快照清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "snapshot", "total": total, "items": items}
